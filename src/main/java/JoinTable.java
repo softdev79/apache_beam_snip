@@ -52,10 +52,10 @@ public class JoinTable {
                 .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE)
                 .withSchema(BiquerySchema.getOutputSchema())); */
         Map<String, Object> kafkaConfig = new HashMap<>();
-        kafkaConfig.put("bootstrap.servers", "pkc-619z3.us-east1.gcp.confluent.cloud:9092");
+        kafkaConfig.put("bootstrap.servers", "cloud:9092");
         kafkaConfig.put("security.protocol", "SASL_SSL");
         kafkaConfig.put("sasl.mechanism", "PLAIN");
-        kafkaConfig.put("sasl.jaas.config", "org.apache.kafka.common.security.plain.PlainLoginModule required username='AVVANESSOLCAIQ3K' password='1e3XJRF0mUhVYa2/binldvCFwk1euwNLIA3laQ0TqsIgKv9rglmVlTj+eYb7Sk9W';");
+        kafkaConfig.put("sasl.jaas.config", "org.apache.kafka.common.security.plain.PlainLoginModule required username='A' password='';");
         kafkaConfig.put("ssl.endpoint.identification.algorithm", "https");
         kafkaConfig.put("client.dns.lookup", "use_all_dns_ips");
         kafkaConfig.put("request.timeout.ms", "30000");
