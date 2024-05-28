@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bigquery-to-kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bigquery-to-kafka
+  template:
+    metadata:
+      labels:
+        app: bigquery-to-kafka
+    spec:
+      serviceAccountName: my-k8s-service-account  # Specify the Kubernetes service account
+      containers:
+      - name: bigquery-to-kafka
+        image: gcr.io/steady-burner-336411/kafka-to-bq:latest
+        env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/secrets/google/key.json
+        - name: GCP_PROJECT_ID
+          value: "steady-burner-336411"
+        args: ["--project=my-gcp-project-id", "--runner=DataflowRunner", "--region=us-east4", "--gcpTempLocation=gs://steady-burner-336411/tmp","--tempLocation=gs://steady-burner-336411/tmp2"]
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        volumeMounts:
+        - name: gcp-key
+          mountPath: /var/secrets/google
+          readOnly: true
+      volumes:
+      - name: gcp-key
+        secret:
+          secretName: my-key
