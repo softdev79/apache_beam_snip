@@ -79,3 +79,53 @@ CREATE TABLE `steady-burner-336411.vishal_dataset.dag_dependency_hashes` (
     dag_name STRING NOT NULL,
     dependency_hash STRING NOT NULL
 )
+#####
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime
+from google.cloud import storage, bigquery
+
+# Function to download SQL file from GCS and execute it
+def execute_sql_from_gcs(**kwargs):
+    # Initialize GCS client
+    storage_client = storage.Client()
+    bucket_name = 'your-gcs-bucket-name'
+    file_name = 'path/to/your/sqlfile.sql'
+
+    # Get the bucket and blob (file)
+    bucket = storage_client.get_bucket(bucket_name)
+    blob = bucket.blob(file_name)
+    
+    # Download the SQL file content as a string
+    sql_query = blob.download_as_text()
+
+    # Initialize BigQuery client
+    bq_client = bigquery.Client()
+
+    # Run the SQL query
+    query_job = bq_client.query(sql_query)
+
+    # Wait for the query to finish
+    query_job.result()
+
+    print("SQL file executed successfully.")
+
+# Define your DAG
+default_args = {
+    'owner': 'airflow',
+    'start_date': datetime(2023, 9, 13),
+    'retries': 1,
+}
+
+with DAG(dag_id='execute_sql_gcs_dag',
+         default_args=default_args,
+         schedule_interval=None,
+         catchup=False) as dag:
+
+    execute_sql_task = PythonOperator(
+        task_id='execute_sql_from_gcs',
+        python_callable=execute_sql_from_gcs,
+        provide_context=True
+    )
+    
+    execute_sql_task
