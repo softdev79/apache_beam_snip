@@ -1,0 +1,57 @@
+{% set parents = [] %}
+{% set children = [] %}
+
+{# ------------------------------------------- #}
+{# 1. Create tasks for each row in df          #}
+{# ------------------------------------------- #}
+{% for index, row in df.iterrows() %}
+    {# row.ACT is the task name; row.PARENT is the parent name #}
+    tasks['{{ row.ACT }}'] = PythonOperator(
+        task_id='{{ row.ACT }}',
+        python_callable=...  # your callable
+    )
+{% endfor %}
+
+
+{# ------------------------------------------- #}
+{# 2. Define dependencies parent --> child     #}
+{#    Also collect unique parents and children #}
+{# ------------------------------------------- #}
+{% for index, row in df.iterrows() %}
+    {% set parent_name = row.PARENT|string %}
+    {% set child_name  = row.ACT|string   %}
+    
+    {# If parent_name is valid (not empty or NA), link them #}
+    {% if parent_name and parent_name != 'NA' %}
+        tasks['{{ parent_name }}'] >> tasks['{{ child_name }}']
+        
+        {# Keep track of all parents and children #}
+        {% if parent_name not in parents %}
+            {% set _ = parents.append(parent_name) %}
+        {% endif %}
+        {% if child_name not in children %}
+            {% set _ = children.append(child_name) %}
+        {% endif %}
+    {% endif %}
+{% endfor %}
+
+
+{# ------------------------------------------- #}
+{# 3. Identify leaf tasks = tasks not in       #}
+{#    the parent list.                         #}
+{# ------------------------------------------- #}
+{% set leaf_acts = [] %}
+{% for index, row in df.iterrows() %}
+    {% set candidate = row.ACT %}
+    {% if candidate not in parents %}
+        {% set _ = leaf_acts.append(candidate) %}
+    {% endif %}
+{% endfor %}
+
+
+{# ------------------------------------------- #}
+{# 4. Link each leaf task to the "end" task    #}
+{# ------------------------------------------- #}
+{% for leaf in leaf_acts %}
+tasks['{{ leaf }}'] >> tasks['end']
+{% endfor %}
