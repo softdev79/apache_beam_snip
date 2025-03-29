@@ -1,57 +1,78 @@
-{% set parents = [] %}
-{% set children = [] %}
+hi
+from airflow import DAG
+from airflow.exceptions import AirflowException
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from airflow.providers.google.cloud.operators.dlp import CloudDLPCreateDLPJobOperator
+from airflow.operators.python import PythonOperator
+from datetime import datetime
 
-{# ------------------------------------------- #}
-{# 1. Create tasks for each row in df          #}
-{# ------------------------------------------- #}
-{% for index, row in df.iterrows() %}
-    {# row.ACT is the task name; row.PARENT is the parent name #}
-    tasks['{{ row.ACT }}'] = PythonOperator(
-        task_id='{{ row.ACT }}',
-        python_callable=...  # your callable
+PROJECT_ID = "your-gcp-project"
+DATASET = "your_dataset"
+TABLE_NAME = "supp_example_table"  # table name starting with "supp_"
+
+default_args = {"start_date": datetime(2023, 1, 1)}
+with DAG("dlp_bigquery_example", default_args=default_args, schedule_interval=None, catchup=False) as dag:
+
+    # Task 1: Create a new BigQuery table (supp_*)
+    create_table = BigQueryInsertJobOperator(
+        task_id="create_supp_table",
+        configuration={
+            "query": {
+                # Example: create/populate table (replace with your SQL)
+                "query": f"CREATE OR REPLACE TABLE `{PROJECT_ID}.{DATASET}.{TABLE_NAME}` AS SELECT * FROM ...",
+                "useLegacySql": False
+            }
+        },
+        location="US",  # BigQuery location
+        gcp_conn_id="google_cloud_default"
     )
-{% endfor %}
 
+    # Task 2: Run Cloud DLP inspection on the table
+    inspect_job_config = {
+        "inspect_config": {
+            "info_types": [    # scan for various PII infoTypes
+                {"name": "PERSON_NAME"},
+                {"name": "EMAIL_ADDRESS"},
+                {"name": "PHONE_NUMBER"},
+                {"name": "CREDIT_CARD_NUMBER"}
+            ],
+            "include_quote": False  # don't include the actual data samples in results
+        },
+        "storage_config": {
+            "big_query_options": {
+                "table_reference": {
+                    "project_id": PROJECT_ID,
+                    "dataset_id": DATASET,
+                    "table_id": TABLE_NAME
+                }
+            }
+        }
+        # (no "actions" specified; we'll fetch results directly)
+    }
+    dlp_scan = CloudDLPCreateDLPJobOperator(
+        task_id="dlp_inspect_table",
+        project_id=PROJECT_ID,
+        inspect_job=inspect_job_config,
+        wait_until_finished=True,  # wait for job completion&#8203;:contentReference[oaicite:7]{index=7}
+        gcp_conn_id="google_cloud_default"
+    )
 
-{# ------------------------------------------- #}
-{# 2. Define dependencies parent --> child     #}
-{#    Also collect unique parents and children #}
-{# ------------------------------------------- #}
-{% for index, row in df.iterrows() %}
-    {% set parent_name = row.PARENT|string %}
-    {% set child_name  = row.ACT|string   %}
-    
-    {# If parent_name is valid (not empty or NA), link them #}
-    {% if parent_name and parent_name != 'NA' %}
-        tasks['{{ parent_name }}'] >> tasks['{{ child_name }}']
-        
-        {# Keep track of all parents and children #}
-        {% if parent_name not in parents %}
-            {% set _ = parents.append(parent_name) %}
-        {% endif %}
-        {% if child_name not in children %}
-            {% set _ = children.append(child_name) %}
-        {% endif %}
-    {% endif %}
-{% endfor %}
+    # Task 3: Check DLP findings and fail if any PII detected
+    def check_for_pii(**context):
+        # Pull the DLP job result from XCom (the output of dlp_scan task)
+        dlp_job = context["ti"].xcom_pull(task_ids="dlp_inspect_table")
+        # The DLP job results include infoType stats if anything was found
+        info_types_found = dlp_job.get("inspectDetails", {}).get("result", {}).get("infoTypeStats", [])
+        if info_types_found:
+            # If any sensitive info was identified, raise an exception to fail the task
+            raise AirflowException(f"Sensitive PII detected by DLP: {info_types_found}")
+        # If no findings, the task will end successfully (do nothing)
 
+    check_pii = PythonOperator(
+        task_id="check_dlp_results",
+        python_callable=check_for_pii,
+        provide_context=True  # to use context in the callable
+    )
 
-{# ------------------------------------------- #}
-{# 3. Identify leaf tasks = tasks not in       #}
-{#    the parent list.                         #}
-{# ------------------------------------------- #}
-{% set leaf_acts = [] %}
-{% for index, row in df.iterrows() %}
-    {% set candidate = row.ACT %}
-    {% if candidate not in parents %}
-        {% set _ = leaf_acts.append(candidate) %}
-    {% endif %}
-{% endfor %}
-
-
-{# ------------------------------------------- #}
-{# 4. Link each leaf task to the "end" task    #}
-{# ------------------------------------------- #}
-{% for leaf in leaf_acts %}
-tasks['{{ leaf }}'] >> tasks['end']
-{% endfor %}
+    # Set task dependencies: create_table -> dlp_scan -> check_pii
+    create_table >> dlp_scan >> check_pii
