@@ -1,1 +1,49 @@
+import subprocess
+import logging
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+
+default_args = {
+    'owner': 'airflow',
+    'start_date': datetime(2025, 4, 1),
+    'retries': 3,                    # retry a few times on failure
+    'retry_delay': timedelta(minutes=10),
+}
+
+def backup_gcs_logs():
+    """
+    Uses `gsutil -m rsync -r` to mirror today's logs folder
+    from the source bucket into the backup bucket. If it fails
+    mid-way, rerunning will only copy the missing files.
+    """
+    today = datetime.now().strftime("%d-%m-%Y")
+    source = f"gs://your-primary-cloud-composer-bucket/logs/{today}/logs/"
+    dest   = f"gs://your-backup-bucket-name/Backup_logs/{today}/logs/"
+
+    cmd = ["gsutil", "-m", "rsync", "-r", source, dest]
+    logging.info(f"Running: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    logging.info("gsutil stdout:\n" + result.stdout)
+    if result.returncode != 0:
+        logging.error("gsutil stderr:\n" + result.stderr)
+        # Raise to let Airflow catch and retry
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+
+with DAG(
+    'log_copy_dag',
+    default_args=default_args,
+    schedule_interval='0 0 * * *',  # midnight daily
+    catchup=False,
+    description="Mirror today's logs folder with gsutil rsync"
+) as dag:
+
+    backup_logs = PythonOperator(
+        task_id='backup_logs',
+        python_callable=backup_gcs_logs,
+    )
+
+    backup_logs
 
