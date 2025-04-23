@@ -1,72 +1,53 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
-from google.cloud import logging_v2
-from google.cloud import storage
+from google.cloud import logging_v2, storage
 import json
 
 def export_logs_to_gcs(**context):
-    # Initialize clients
+    project_id = "your-project-id"
+    bucket_name = "your-backup-bucket"
+    dag_id = context["dag"].dag_id
+    start_time = context["data_interval_start"].isoformat("T") + "Z"
+    end_time = context["data_interval_end"].isoformat("T") + "Z"
+
+    log_filter = f"""
+    resource.type="cloud_composer_environment"
+    timestamp>="{start_time}"
+    timestamp<"{end_time}"
+    """
+
     logging_client = logging_v2.LoggingServiceV2Client()
     storage_client = storage.Client()
 
-    # Define parameters
-    project_id = 'your-project-id'
-    bucket_name = 'your-gcs-bucket-name'
-    log_filter = (
-        'resource.type="cloud_composer_environment" '
-        'severity>=DEFAULT'
-    )
-    now = datetime.utcnow()
-    start_time = (now - timedelta(hours=1)).isoformat("T") + "Z"
-    end_time = now.isoformat("T") + "Z"
-
-    # Prepare the request
-    resource_names = [f"projects/{project_id}"]
-    request = logging_v2.ListLogEntriesRequest(
-        resource_names=resource_names,
-        filter=log_filter,
-        order_by=logging_v2.ListLogEntriesRequest.OrderBy.TIMESTAMP_DESC,
+    entries = logging_client.list_log_entries(
+        {"project_ids": [project_id]}, filter=log_filter
     )
 
-    # Fetch log entries
-    entries = []
-    for entry in logging_client.list_log_entries(request=request):
-        entries.append(entry)
+    logs = [entry.ToDict() for entry in entries]
 
-    # Serialize log entries to JSON
-    log_data = [entry.to_dict() for entry in entries]
-    log_json = json.dumps(log_data, indent=2)
-
-    # Define GCS object name
-    timestamp = now.strftime("%Y%m%dT%H%M%S")
-    destination_blob_name = f"composer_logs/logs_{timestamp}.json"
-
-    # Upload to GCS
+    # Prepare destination file name
+    file_path = f"composer_logs/{context['ds']}/composer_logs.json"
     bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_string(log_json, content_type='application/json')
+    blob = bucket.blob(file_path)
+    blob.upload_from_string(json.dumps(logs, indent=2), content_type="application/json")
 
-    print(f"Exported {len(entries)} log entries to gs://{bucket_name}/{destination_blob_name}")
-
-# Define the DAG
 default_args = {
     'owner': 'airflow',
-    'start_date': datetime(2025, 4, 23),
+    'start_date': datetime(2024, 1, 1),
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
 
 with DAG(
-    'export_composer_logs_to_gcs',
+    dag_id="export_composer_logs_daily",
     default_args=default_args,
-    description='Export Cloud Composer logs to GCS',
-    schedule_interval=timedelta(days=1),
+    schedule_interval="@daily",
     catchup=False,
 ) as dag:
 
     export_logs = PythonOperator(
-        task_id='export_logs_to_gcs',
+        task_id="export_logs_to_gcs",
         python_callable=export_logs_to_gcs,
         provide_context=True,
     )
