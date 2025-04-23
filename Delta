@@ -1,53 +1,35 @@
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from datetime import datetime, timedelta
-from google.cloud import logging_v2, storage
+from google.cloud.logging_v2.services.logging_service_v2 import LoggingServiceV2Client
+from google.cloud import storage
 import json
 
 def export_logs_to_gcs(**context):
-    project_id = "your-project-id"
+    project_id  = "your-project-id"
     bucket_name = "your-backup-bucket"
-    dag_id = context["dag"].dag_id
-    start_time = context["data_interval_start"].isoformat("T") + "Z"
-    end_time = context["data_interval_end"].isoformat("T") + "Z"
 
-    log_filter = f"""
-    resource.type="cloud_composer_environment"
-    timestamp>="{start_time}"
-    timestamp<"{end_time}"
-    """
+    # 1) RFC3339 with Z (no offset)
+    start_time = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_time   = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    logging_client = logging_v2.LoggingServiceV2Client()
-    storage_client = storage.Client()
-
-    entries = logging_client.list_log_entries(
-        {"project_ids": [project_id]}, filter=log_filter
+    # 2) Single filter with AND
+    log_filter = (
+        'resource.type="cloud_composer_environment" AND '
+        f'timestamp >= "{start_time}" AND '
+        f'timestamp < "{end_time}"'
     )
 
-    logs = [entry.ToDict() for entry in entries]
+    # 3) Call GAPIC with named args
+    logging_client = LoggingServiceV2Client()
+    entries = logging_client.list_log_entries(
+        resource_names=[f"projects/{project_id}"],
+        filter=log_filter,
+    )
 
-    # Prepare destination file name
+    # 4) Upload to GCS
+    storage_client = storage.Client()
+    logs = [e.to_dict() for e in entries]
     file_path = f"composer_logs/{context['ds']}/composer_logs.json"
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(file_path)
-    blob.upload_from_string(json.dumps(logs, indent=2), content_type="application/json")
-
-default_args = {
-    'owner': 'airflow',
-    'start_date': datetime(2024, 1, 1),
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
-
-with DAG(
-    dag_id="export_composer_logs_daily",
-    default_args=default_args,
-    schedule_interval="@daily",
-    catchup=False,
-) as dag:
-
-    export_logs = PythonOperator(
-        task_id="export_logs_to_gcs",
-        python_callable=export_logs_to_gcs,
-        provide_context=True,
+    bucket    = storage_client.bucket(bucket_name)
+    bucket.blob(file_path).upload_from_string(
+        json.dumps(logs, indent=2),
+        content_type="application/json",
     )
