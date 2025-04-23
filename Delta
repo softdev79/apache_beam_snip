@@ -1,3 +1,4 @@
+from google.api_core.retry import Retry
 from google.cloud.logging_v2.services.logging_service_v2 import LoggingServiceV2Client
 from google.cloud import storage
 from google.protobuf.json_format import MessageToDict
@@ -6,28 +7,33 @@ import json
 def export_logs_to_gcs(**context):
     project_id  = "your-project-id"
     bucket_name = "your-backup-bucket"
-
-    start_time = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_time   = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
+    start = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
+    end   = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
 
     log_filter = (
         'resource.type="cloud_composer_environment" AND '
-        f'timestamp >= "{start_time}" AND timestamp < "{end_time}"'
+        f'timestamp >= "{start}" AND timestamp < "{end}"'
     )
 
-    logging_client = LoggingServiceV2Client()
-    entries = logging_client.list_log_entries(
+    retry = Retry(initial=1.0, maximum=60.0, multiplier=2.0, deadline=300.0)
+    log_client = LoggingServiceV2Client()
+    entries = log_client.list_log_entries(
         resource_names=[f"projects/{project_id}"],
         filter=log_filter,
+        page_size=1000,
+        retry=retry,
+        timeout=90.0,
     )
 
-    # <-- use MessageToDict, not `ToDict()`
-    logs = [MessageToDict(entry, preserving_proto_field_name=True) for entry in entries]
+    # unwrap proto and convert
+    logs = [MessageToDict(e._pb, preserving_proto_field_name=True)
+            for page in entries.pages
+            for e in page]
 
     storage_client = storage.Client()
-    file_path      = f"composer_logs/{context['ds']}/composer_logs.json"
-    bucket         = storage_client.bucket(bucket_name)
-    bucket.blob(file_path).upload_from_string(
+    path = f"composer_logs/{context['ds']}/composer_logs.json"
+    bucket = storage_client.bucket(bucket_name)
+    bucket.blob(path).upload_from_string(
         json.dumps(logs, indent=2),
         content_type="application/json",
     )
