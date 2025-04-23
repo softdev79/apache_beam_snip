@@ -1,13 +1,21 @@
-project_id   = "your-project-id"
-env_name     = "your-composer-env-name"    # optional, if you want to pin to one env
-start        = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
-end          = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
+-- Standard SQL scripting
+BEGIN
+  CREATE TEMP TABLE counts (
+    table_name STRING,
+    row_count  INT64
+  );
 
-log_filter = (
-    'resource.type="cloud_composer_environment" AND '
-    f'resource.labels.environment_name="{env_name}" AND '
-    # only Airflow logs:
-    f'logName=~"projects/{project_id}/logs/airflow.*" AND '
-    # your data‐interval window:
-    f'timestamp >= "{start}" AND timestamp < "{end}"'
-)
+  FOR tbl IN (
+    SELECT table_name
+    FROM `your-project.your_dataset.INFORMATION_SCHEMA.TABLES`
+    WHERE table_name LIKE 'supp\_%'
+  ) DO
+    EXECUTE IMMEDIATE FORMAT("""
+      INSERT INTO counts
+      SELECT '%s', COUNT(*) FROM `your-project.your_dataset.%s`
+    """, tbl.table_name, tbl.table_name);
+  END FOR;
+
+  SELECT * FROM counts
+  WHERE row_count > 3000;
+END;
