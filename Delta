@@ -1,34 +1,32 @@
 from google.cloud.logging_v2.services.logging_service_v2 import LoggingServiceV2Client
 from google.cloud import storage
+from google.protobuf.json_format import MessageToDict
 import json
 
 def export_logs_to_gcs(**context):
     project_id  = "your-project-id"
     bucket_name = "your-backup-bucket"
 
-    # 1) RFC3339 with Z (no offset)
     start_time = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
     end_time   = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 2) Single filter with AND
     log_filter = (
         'resource.type="cloud_composer_environment" AND '
-        f'timestamp >= "{start_time}" AND '
-        f'timestamp < "{end_time}"'
+        f'timestamp >= "{start_time}" AND timestamp < "{end_time}"'
     )
 
-    # 3) Call GAPIC with named args
     logging_client = LoggingServiceV2Client()
     entries = logging_client.list_log_entries(
         resource_names=[f"projects/{project_id}"],
         filter=log_filter,
     )
 
-    # 4) Upload to GCS
+    # <-- use MessageToDict, not `ToDict()`
+    logs = [MessageToDict(entry, preserving_proto_field_name=True) for entry in entries]
+
     storage_client = storage.Client()
-    logs = [e.to_dict() for e in entries]
-    file_path = f"composer_logs/{context['ds']}/composer_logs.json"
-    bucket    = storage_client.bucket(bucket_name)
+    file_path      = f"composer_logs/{context['ds']}/composer_logs.json"
+    bucket         = storage_client.bucket(bucket_name)
     bucket.blob(file_path).upload_from_string(
         json.dumps(logs, indent=2),
         content_type="application/json",
