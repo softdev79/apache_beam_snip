@@ -1,46 +1,13 @@
-from google.cloud.logging_v2.services.logging_service_v2 import LoggingServiceV2Client
-from google.api_core.retry import Retry
-from google.cloud import storage
-from google.protobuf.json_format import MessageToDict
-import json
+project_id   = "your-project-id"
+env_name     = "your-composer-env-name"    # optional, if you want to pin to one env
+start        = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
+end          = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
 
-def export_logs_to_gcs(**context):
-    project_id  = "your-project-id"
-    bucket_name = "your-backup-bucket"
-
-    start = context["data_interval_start"].strftime("%Y-%m-%dT%H:%M:%SZ")
-    end   = context["data_interval_end"].strftime("%Y-%m-%dT%H:%M:%SZ")
-    log_filter = (
-        'resource.type="cloud_composer_environment" AND '
-        f'timestamp >= "{start}" AND timestamp < "{end}"'
-    )
-
-    retry = Retry(initial=1.0, maximum=60.0, multiplier=2.0, deadline=300.0)
-    client = LoggingServiceV2Client()
-
-    # build the request with page_size INSIDE it
-    request = {
-      "resource_names": [f"projects/{project_id}"],
-      "filter": log_filter,
-      "page_size": 1000,
-    }
-
-    pager = client.list_log_entries(
-        request=request,
-        retry=retry,
-        timeout=90.0,
-    )
-
-    logs = [
-      MessageToDict(entry._pb, preserving_proto_field_name=True)
-      for page in pager.pages
-      for entry in page
-    ]
-
-    storage_client = storage.Client()
-    path = f"composer_logs/{context['ds']}/composer_logs.json"
-    bucket = storage_client.bucket(bucket_name)
-    bucket.blob(path).upload_from_string(
-      json.dumps(logs, indent=2),
-      content_type="application/json",
-    )
+log_filter = (
+    'resource.type="cloud_composer_environment" AND '
+    f'resource.labels.environment_name="{env_name}" AND '
+    # only Airflow logs:
+    f'logName=~"projects/{project_id}/logs/airflow.*" AND '
+    # your data‐interval window:
+    f'timestamp >= "{start}" AND timestamp < "{end}"'
+)
