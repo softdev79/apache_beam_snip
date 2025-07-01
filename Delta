@@ -1,1 +1,80 @@
+-- 1) Define the report date as “yesterday”
+WITH params AS (
+  SELECT
+    DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)  AS report_date
+),
+
+-- 2) For each DAG, determine if it should have run on report_date
+sched AS (
+  SELECT
+    i.dag_name,
+    i.schedule_interval,            -- e.g. 1, 2, 3…
+    i.schedule_frequency,           -- 'd', 'm', or 'y'
+    DATE(i.scheduleinit)    AS first_run_date,
+    p.report_date,
+    -- Compute the number of units (days/months/years) since first_run_date
+    CASE i.schedule_frequency
+      WHEN 'd' THEN
+        MOD(
+          DATE_DIFF(p.report_date, DATE(i.scheduleinit), DAY),
+          i.schedule_interval
+        ) = 0
+      WHEN 'm' THEN
+        MOD(
+          DATE_DIFF(p.report_date, DATE(i.scheduleinit), MONTH),
+          i.schedule_interval
+        ) = 0
+      WHEN 'y' THEN
+        MOD(
+          DATE_DIFF(p.report_date, DATE(i.scheduleinit), YEAR),
+          i.schedule_interval
+        ) = 0
+      ELSE
+        FALSE
+    END AS is_scheduled
+  FROM
+    `project.dataset.info_table` AS i
+  CROSS JOIN
+    params AS p
+  WHERE
+    -- Only consider dates on/after the first allowed run
+    DATE_SUB(p.report_date, INTERVAL 0 DAY) >= DATE(i.scheduleinit)
+),
+
+-- 3) Pull any executions that started on report_date
+execs AS (
+  SELECT
+    el.dag_id            AS dag_name,
+    COUNT(DISTINCT el.taskid)  AS tasks_run_count
+  FROM
+    `project.dataset.execution_log` AS el
+  JOIN
+    params AS p
+    ON DATE(el.task_start_time) = p.report_date
+  GROUP BY
+    el.dag_id
+)
+
+-- 4) Combine to get one row per DAG with its status
+SELECT
+  s.dag_name,
+  s.schedule_frequency,
+  s.schedule_interval,
+  s.first_run_date,
+  s.report_date            AS scheduled_date,
+  IF(s.is_scheduled, 'Yes', 'No')      AS supposed_to_run,
+  COALESCE(e.tasks_run_count, 0)       AS actual_task_runs,
+  CASE
+    WHEN s.is_scheduled AND e.tasks_run_count > 0 THEN '✅ Ran as Scheduled'
+    WHEN s.is_scheduled AND e.tasks_run_count = 0 THEN '❌ Missed Run'
+    WHEN NOT s.is_scheduled THEN           '– Not Scheduled Today'
+  END AS run_status
+FROM
+  sched AS s
+LEFT JOIN
+  execs AS e
+ON
+  s.dag_name = e.dag_name
+ORDER BY
+  s.dag_name;
 
