@@ -1,1 +1,120 @@
+-- 1) Set the report date + tolerance
+WITH params AS (
+  SELECT
+    DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) AS report_date,
+    15                                 AS tolerance_minutes   -- ±15 min window
+),
+
+-- 2) Build schedule info & expected run timestamp
+sched AS (
+  SELECT
+    i.dag_name,
+    i.schedule_interval,
+    i.schedule_frequency,
+    i.scheduleinit,
+    -- extract the time‐of‐day we want to enforce
+    TIME(
+      EXTRACT(HOUR   FROM i.scheduleinit),
+      EXTRACT(MINUTE FROM i.scheduleinit),
+      EXTRACT(SECOND FROM i.scheduleinit)
+    ) AS scheduled_time_of_day,
+
+    p.report_date,
+    p.tolerance_minutes,
+
+    -- should this dag run on report_date?
+    CASE i.schedule_frequency
+      WHEN 'd' THEN TRUE
+      WHEN 'm' THEN
+        -- same day‐of‐month + month-difference % interval = 0
+        EXTRACT(DAY FROM p.report_date) = EXTRACT(DAY FROM i.scheduleinit)
+        AND MOD(
+          DATE_DIFF(p.report_date, DATE(i.scheduleinit), MONTH),
+          i.schedule_interval
+        ) = 0
+      WHEN 'y' THEN
+        -- same month+day + year-difference % interval = 0
+        EXTRACT(MONTH FROM p.report_date) = EXTRACT(MONTH FROM i.scheduleinit)
+        AND EXTRACT(DAY   FROM p.report_date) = EXTRACT(DAY   FROM i.scheduleinit)
+        AND MOD(
+          DATE_DIFF(p.report_date, DATE(i.scheduleinit), YEAR),
+          i.schedule_interval
+        ) = 0
+      ELSE FALSE
+    END AS is_scheduled,
+
+    -- expected run timestamp for that date at the scheduled time
+    TIMESTAMP(
+      DATETIME(p.report_date, TIME(
+        EXTRACT(HOUR   FROM i.scheduleinit),
+        EXTRACT(MINUTE FROM i.scheduleinit),
+        EXTRACT(SECOND FROM i.scheduleinit)
+      ))
+    ) AS expected_run_ts
+
+  FROM
+    `project.dataset.info_table`  AS i
+  CROSS JOIN
+    params                      AS p
+  WHERE
+    -- only consider DAGs active by yesterday
+    DATE(i.scheduleinit) <= p.report_date
+),
+
+-- 3) Pull the earliest actual start per DAG on that date
+execs AS (
+  SELECT
+    el.dag_id               AS dag_name,
+    MIN(el.task_start_time) AS first_start_time
+  FROM
+    `project.dataset.execution_log` AS el
+  JOIN
+    params AS p
+    ON DATE(el.task_start_time) = p.report_date
+  GROUP BY
+    el.dag_id
+),
+
+-- 4) Combine & classify
+reports AS (
+  SELECT
+    s.dag_name,
+    s.report_date           AS scheduled_date,
+    s.expected_run_ts,
+    e.first_start_time,
+    s.tolerance_minutes,
+
+    CASE
+      WHEN NOT s.is_scheduled THEN '– Not Scheduled Yesterday'
+      WHEN e.first_start_time IS NULL THEN '❌ Missed Run'
+      WHEN e.first_start_time BETWEEN
+           TIMESTAMP_SUB(s.expected_run_ts, INTERVAL s.tolerance_minutes MINUTE)
+        AND
+           TIMESTAMP_ADD(s.expected_run_ts, INTERVAL s.tolerance_minutes MINUTE)
+      THEN '✅ Ran On Time'
+      ELSE '⚠️ Ran Off Time'
+    END AS run_status,
+
+    -- how many seconds early/late (null if missed or not scheduled)
+    CASE
+      WHEN e.first_start_time IS NOT NULL
+      THEN TIMESTAMP_DIFF(e.first_start_time, s.expected_run_ts, SECOND)
+    END AS deviation_seconds
+
+  FROM sched AS s
+  LEFT JOIN execs AS e
+    ON s.dag_name = e.dag_name
+)
+
+SELECT
+  dag_name,
+  scheduled_date,
+  expected_run_ts,
+  first_start_time,
+  deviation_seconds,
+  run_status
+FROM
+  reports
+ORDER BY
+  dag_name;
 
